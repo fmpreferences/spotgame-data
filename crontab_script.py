@@ -30,6 +30,7 @@ BUCKET_MAP = {
 }
 
 DB_PATH = "somewhereonmyvps.sqlite3"
+KWORB_PATH = "KWORB.csv"
 
 sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials())
 
@@ -73,7 +74,7 @@ def pull_kworb(threshold):
     df["Occurrence"] = df.groupby("Artist and Title").cumcount()
     df[["Artist", "Title"]] = df["Artist and Title"].str.split(" - ", n=1, expand=True)
 
-    df.to_csv("KWORB_PULL.csv", index=False)
+    df.to_csv(KWORB_PATH, index=False)
 
     print(df)
 
@@ -131,19 +132,21 @@ def process_artist_genres(artists_lst, conn):
                 dfs.append(df2)
     df = pd.concat(dfs)
     df = df.explode("Genre")
-    df.to_sql("genres", conn, if_exists='replace', index=False)
+    df.to_sql("genres", conn, if_exists="replace", index=False)
     return df
+
 
 def bucket(row):
     # only for edm rn idk what to do with others
     row["Bucket"] = None
     for genre in BUCKET_MAP["edm"]:
-        if genre in row['Genre']:
+        if genre in row["Genre"]:
             row["Bucket"] = "edm"
-    return row.drop('Genre')
+    return row.drop("Genre")
+
 
 def process_songs():
-    tracks = pd.read_csv("t300k.csv")
+    tracks = pd.read_csv(KWORB_PATH)
 
     step = 250
 
@@ -170,17 +173,17 @@ def process_songs():
         genre_df = process_artist_genres(all_artists, conn)
 
         df = df.drop(["Artists", "ArtistID"], axis=1)
-        df.to_sql(
-            "tracks", conn, if_exists="replace", index=False
-        )
+        df.to_sql("tracks", conn, if_exists="replace", index=False)
         song_artist_df.to_sql("track_artists", conn, if_exists="replace", index=False)
 
-        bucket_df = df[['ID', 'Title']].merge(song_artist_df, 'inner').merge(genre_df, 'inner')[['ID', 'Genre']]
-        bucket_df.apply(bucket, axis=1).dropna().to_sql(
-            'buckets',  conn, if_exists='replace', index=False
+        bucket_df = (
+            df[["ID", "Title"]]
+            .merge(song_artist_df, "inner")
+            .merge(genre_df, "inner")[["ID", "Genre"]]
         )
-
-
+        bucket_df.apply(bucket, axis=1).dropna().drop_duplicates().to_sql(
+            "buckets", conn, if_exists="replace", index=False
+        )
 
 
 if __name__ == "__main__":
