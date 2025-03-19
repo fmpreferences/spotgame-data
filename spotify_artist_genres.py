@@ -25,8 +25,9 @@ artists_lst = list(artists)
 for i in range(0, len(artists), 50):
     artists_sp = sp.artists(artists_lst[i : i + 50])
     for artist in artists_sp["artists"]:
-        genres[artist["uri"]] = artist["genres"]
+        if artist['genres']:
+            genres[artist["uri"]] = artist["genres"]
 
 
 with open("genre_map.json", "w") as genre_f:
-    json.dump(genres, genre_f)
+    json.dump(genres, genre_f, indent=4)

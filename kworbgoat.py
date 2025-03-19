@@ -39,7 +39,5 @@ df[["Artist", "Title"]] = df["Artist and Title"].str.split(" - ", n=1, expand=Tr
 
 df.to_csv("t300k.csv", index=False)
 
-df_artist = df["Artist"].drop_duplicates()
-df_artist.to_csv("t300k_artists.csv", index=False)
 
 print(df)
