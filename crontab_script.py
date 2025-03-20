@@ -4,7 +4,6 @@ import pandas as pd
 import time
 import sqlite3
 import requests
-import os
 import re
 from dotenv import load_dotenv
 
@@ -95,7 +94,7 @@ def get_real_song(row):
             lst.append(
                 (
                     -res["popularity"],
-                    res["album"]["release_date"][:4],
+                    int(res["album"]["release_date"][:4]),
                     res["name"],
                     res["id"],
                     [artist_item["name"] for artist_item in res["artists"]],
@@ -115,24 +114,25 @@ def get_real_song(row):
     return row.drop(["Artist and Title", "Artist", "Daily", "Occurrence"])
 
 
-def process_artist_genres(artists_lst, conn):
+def process_artist_genres(artists_lst):
     dfs = []
 
     for i in range(0, len(artists_lst), 50):
         artists_sp = sp.artists(artists_lst[i : i + 50])
         for artist in artists_sp["artists"]:
-            if artist["genres"]:
-                df2 = pd.DataFrame(
-                    {
-                        "ArtistName": artist["name"],
-                        "ArtistID": artist["id"],
-                        "Genre": artist["genres"],
-                    }
-                )
-                dfs.append(df2)
+            temp_genres = artist["genres"]
+            if not temp_genres:
+                temp_genres = [None]
+            df2 = pd.DataFrame(
+                {
+                    "ArtistName": artist["name"],
+                    "ArtistID": artist["id"],
+                    "Genre": temp_genres,
+                }
+            )
+            dfs.append(df2)
     df = pd.concat(dfs)
     df = df.explode("Genre")
-    df.to_sql("genres", conn, if_exists="replace", index=False)
     return df
 
 
@@ -170,7 +170,10 @@ def process_songs():
         # print(df)
         song_artist_df = df[["ID", "ArtistID"]].explode("ArtistID")
         all_artists = song_artist_df["ArtistID"].unique()
-        genre_df = process_artist_genres(all_artists, conn)
+        genre_df = process_artist_genres(all_artists)
+        print(genre_df)
+        artist_df = genre_df.drop("Genre", axis=1).drop_duplicates()
+        genre_df = genre_df.drop("ArtistName", axis=1).dropna()
 
         df = df.drop(["Artists", "ArtistID"], axis=1)
         df.to_sql("tracks", conn, if_exists="replace", index=False)
@@ -184,6 +187,9 @@ def process_songs():
         bucket_df.apply(bucket, axis=1).dropna().drop_duplicates().to_sql(
             "buckets", conn, if_exists="replace", index=False
         )
+
+        genre_df.to_sql("genres", conn, if_exists="replace", index=False)
+        artist_df.to_sql("artists", conn, if_exists="replace", index=False)
 
 
 if __name__ == "__main__":
