@@ -33,6 +33,8 @@ KWORB_PATH = "KWORB.csv"
 
 sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials())
 
+WHITELIST_EDM = pd.read_csv('edm_whitelist')['aid'].unique()
+
 
 def pull_kworb(threshold):
     years = [
@@ -122,7 +124,10 @@ def process_artist_genres(artists_lst):
         for artist in artists_sp["artists"]:
             temp_genres = artist["genres"]
             if not temp_genres:
-                temp_genres = [None]
+                if artist['id'] in WHITELIST_EDM:
+                    temp_genres = ['edm']
+                else:
+                    temp_genres = [None]
             df2 = pd.DataFrame(
                 {
                     "ArtistName": artist["name"],
@@ -171,7 +176,6 @@ def process_songs():
         song_artist_df = df[["ID", "ArtistID"]].explode("ArtistID")
         all_artists = song_artist_df["ArtistID"].unique()
         genre_df = process_artist_genres(all_artists)
-        print(genre_df)
         artist_df = genre_df.drop("Genre", axis=1).drop_duplicates()
         genre_df = genre_df.drop("ArtistName", axis=1).dropna()
 
