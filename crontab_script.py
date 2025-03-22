@@ -68,12 +68,13 @@ def pull_kworb(threshold):
         pull = pd.read_html(f"https://kworb.net/spotify/songs_{year}.html")[0]
         df = pd.concat([df, pull[pull["Streams"] >= threshold]])
 
-    df = df.drop_duplicates(["Artist and Title"]).sort_values(
+    df = df.drop_duplicates(["Artist and Title", "Streams"]).sort_values(
         "Streams", ascending=False
     )
+    df["streams"] = df["Streams"]
 
     df["Occurrence"] = df.groupby("Artist and Title").cumcount()
-    df[["Artist", "Title"]] = df["Artist and Title"].str.split(" - ", n=1, expand=True)
+    df[["Artist", "title"]] = df["Artist and Title"].str.split(" - ", n=1, expand=True)
 
     df.to_csv(KWORB_PATH, index=False)
 
@@ -85,7 +86,7 @@ def alnum_only(s):
 
 
 def get_real_song(row):
-    name, artist, rank = row["Title"], row["Artist"], row["Occurrence"]
+    name, artist, rank = row["title"], row["Artist"], row["Occurrence"]
     reses = sp.search(f"{name} artist:{artist}", type="track")["tracks"]["items"]
     lst = []
     for res in reses:
@@ -108,12 +109,12 @@ def get_real_song(row):
     except IndexError:
         print(name, artist, rank)
         return None
-    row["Title"] = track_name
-    row["Artists"] = artist_names
-    row["ID"] = uri
-    row["ArtistID"] = artist_uris
-    row["Date"] = release_date
-    return row.drop(["Artist and Title", "Artist", "Daily", "Occurrence"])
+    row["title"] = track_name
+    row["artists"] = artist_names
+    row["id"] = uri
+    row["artist_id"] = artist_uris
+    row["date"] = release_date
+    return row.drop(["Artist and Title", "Artist", "Streams", "Daily", "Occurrence"])
 
 
 def process_artist_genres(artists_lst):
@@ -130,24 +131,24 @@ def process_artist_genres(artists_lst):
                     temp_genres = [None]
             df2 = pd.DataFrame(
                 {
-                    "ArtistName": artist["name"],
-                    "ArtistID": artist["id"],
-                    "Genre": temp_genres,
+                    "artist_name": artist["name"],
+                    "artist_id": artist["id"],
+                    "genre": temp_genres,
                 }
             )
             dfs.append(df2)
     df = pd.concat(dfs)
-    df = df.explode("Genre")
+    df = df.explode("genre")
     return df
 
 
 def bucket(row):
     # only for edm rn idk what to do with others
-    row["Bucket"] = None
+    row["bucket"] = None
     for genre in BUCKET_MAP["edm"]:
-        if genre in row["Genre"]:
-            row["Bucket"] = "edm"
-    return row.drop("Genre")
+        if genre in row["genre"]:
+            row["bucket"] = "edm"
+    return row.drop("genre")
 
 
 def process_songs():
@@ -170,23 +171,23 @@ def process_songs():
                 break
             # break
 
-        df = df.drop_duplicates("ID").dropna()
+        df = df.drop_duplicates("id").dropna()
 
         # print(df)
-        song_artist_df = df[["ID", "ArtistID"]].explode("ArtistID")
-        all_artists = song_artist_df["ArtistID"].unique()
+        song_artist_df = df[["id", "artist_id"]].explode("artist_id")
+        all_artists = song_artist_df["artist_id"].unique()
         genre_df = process_artist_genres(all_artists)
-        artist_df = genre_df.drop("Genre", axis=1).drop_duplicates()
-        genre_df = genre_df.drop("ArtistName", axis=1).dropna()
+        artist_df = genre_df.drop("genre", axis=1).drop_duplicates()
+        genre_df = genre_df.drop("artist_name", axis=1).dropna()
 
-        df = df.drop(["Artists", "ArtistID"], axis=1)
+        df = df.drop(["artists", "artist_id"], axis=1)
         df.to_sql("tracks", conn, if_exists="replace", index=False)
         song_artist_df.to_sql("track_artists", conn, if_exists="replace", index=False)
 
         bucket_df = (
-            df[["ID", "Title"]]
+            df[["id", "title"]]
             .merge(song_artist_df, "inner")
-            .merge(genre_df, "inner")[["ID", "Genre"]]
+            .merge(genre_df, "inner")[["id", "genre"]]
         )
         bucket_df.apply(bucket, axis=1).dropna().drop_duplicates().to_sql(
             "buckets", conn, if_exists="replace", index=False
@@ -197,5 +198,5 @@ def process_songs():
 
 
 if __name__ == "__main__":
-    # pull_kworb(275000000)
+    pull_kworb(250000000)
     process_songs()
