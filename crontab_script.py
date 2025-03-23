@@ -1,3 +1,4 @@
+from types import NoneType
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 import pandas as pd
@@ -6,6 +7,9 @@ import sqlite3
 import requests
 import re
 from dotenv import load_dotenv
+from collections import defaultdict
+import json
+import numpy as np
 
 load_dotenv()
 
@@ -33,7 +37,7 @@ KWORB_PATH = "KWORB.csv"
 
 sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials())
 
-WHITELIST_EDM = pd.read_csv('edm_whitelist')['aid'].unique()
+WHITELIST_EDM = pd.read_csv("edm_whitelist")["aid"].unique()
 
 
 def pull_kworb(threshold):
@@ -85,7 +89,19 @@ def alnum_only(s):
     return re.sub("[^a-z0-9]", "", s.lower())
 
 
-def get_real_song(row):
+def clean_junk_words(s):
+    return re.sub(
+        r" \(feat\. .*?\)| \(with .*?\)| - (\d+ )?Remaster(ed)?( \d+)?", "", s
+    )
+
+
+SAMPLE = 0
+TOT = 0
+
+
+def get_real_song(row, recheck=defaultdict(list), searchres=defaultdict(list)):
+    global SAMPLE
+    global TOT
     name, artist, rank = row["title"], row["Artist"], row["Occurrence"]
     reses = sp.search(f"{name} artist:{artist}", type="track")["tracks"]["items"]
     lst = []
@@ -105,16 +121,41 @@ def get_real_song(row):
                 )
             )
     try:
-        _, release_date, track_name, uri, artist_names, artist_uris = sorted(lst)[rank]
+        lst = sorted(lst)
+        first = lst[rank]
+        for a, b, c, d, e, f in lst:
+            if clean_junk_words(c).lower() != clean_junk_words(first[2]).lower() or set(
+                f
+            ) != set(first[-1]):
+                if abs(a - first[0]) <= 12:
+                    SAMPLE += 1
+                    recheck[first[-1][0]].append(
+                        (name, rank, first[3], row["Streams"], len(first[-1]))
+                    )  # need the chosen id for quick replace
+                    searchres[name] = lst
+                else:
+                    TOT += 1
+                break
+        else:
+            TOT += 1
+        _, release_date, track_name, uri, artist_names, artist_uris = lst[rank]
     except IndexError:
         print(name, artist, rank)
         return None
-    row["title"] = track_name
-    row["artists"] = artist_names
-    row["id"] = uri
-    row["artist_id"] = artist_uris
-    row["date"] = release_date
-    return row.drop(["Artist and Title", "Artist", "Streams", "Daily", "Occurrence"])
+    return_df = pd.DataFrame(
+        [
+            {
+                "id": uri,
+                "streams": row["Streams"],
+                "title": track_name,
+                "date": release_date,
+                "artists": a,
+                "artist_id": b,
+            }
+            for a, b in zip(artist_names, artist_uris)
+        ]
+    )
+    return return_df
 
 
 def process_artist_genres(artists_lst):
@@ -125,8 +166,8 @@ def process_artist_genres(artists_lst):
         for artist in artists_sp["artists"]:
             temp_genres = artist["genres"]
             if not temp_genres:
-                if artist['id'] in WHITELIST_EDM:
-                    temp_genres = ['edm']
+                if artist["id"] in WHITELIST_EDM:
+                    temp_genres = ["edm"]
                 else:
                     temp_genres = [None]
             df2 = pd.DataFrame(
@@ -142,6 +183,77 @@ def process_artist_genres(artists_lst):
     return df
 
 
+REQS = 0
+
+
+def resolve_tracklist(tracks, step):
+    global REQS
+    df = pd.DataFrame()
+    recheck = defaultdict(list)
+    searchres = defaultdict(list)
+    for i in range(0, len(tracks), step):
+        while True:
+            try:
+                track_df = tracks[i : i + step]
+                df = pd.concat(
+                    [
+                        df,
+                        pd.concat(
+                            track_df.apply(
+                                lambda x: get_real_song(x, recheck, searchres), axis=1
+                            ).tolist(),
+                            axis=0,
+                            ignore_index=True,
+                        ),
+                    ]
+                )
+            except requests.exceptions.ReadTimeout:
+                print("rate limit")
+                time.sleep(5)
+                continue
+            break
+        break
+    print(df)
+    reconstructed = []
+    for artist, tracklists in recheck.items():
+        temp_df = pd.read_html(f"https://kworb.net/spotify/artist/{artist}_songs.html")[
+            1
+        ]
+        REQS += 1
+        for track in tracklists:
+            title, rank, chosen, streams, no_artists = track
+            valids = np.nonzero(temp_df["Song Title"].str.contains(title))
+            valid_rank = valids[0][rank]
+            row = temp_df.iloc[valid_rank]
+            newtitle = re.sub(r"^\*", "", row["Song Title"])
+            newdate, newid, newartists, newartistids = 0, "", [], []
+            for _, b, c, d, e, f in searchres[title]:
+                if c == newtitle:  # EXACT
+                    newdate, newid, newartists, newartistids = b, d, e, f
+            if newid == chosen:
+                continue
+            df = df.drop(np.nonzero(df["id"] == chosen)[0][:no_artists].tolist())
+            reconstructed.append(
+                pd.DataFrame(
+                    [
+                        {
+                            "streams": streams,
+                            "title": newtitle,
+                            "artists": a,
+                            "id": newid + "%MOD",
+                            "artist_id": b,
+                            "date": newdate,
+                        }
+                        for a, b in zip(newartists, newartistids)
+                    ]
+                )
+            )
+            df = pd.concat([df] + reconstructed).reset_index(drop=True)
+    df = df.sort_values("streams", ascending=False).reset_index(drop=True)
+
+    return df.drop_duplicates(["id", "artist_id"]).dropna()
+
+
 def bucket(row):
     # only for edm rn idk what to do with others
     row["bucket"] = None
@@ -151,36 +263,15 @@ def bucket(row):
     return row.drop("genre")
 
 
-def process_songs():
-    tracks = pd.read_csv(KWORB_PATH)
-
-    step = 250
-
-    df = pd.DataFrame()
-
+def process_songs(df):
     with sqlite3.connect(DB_PATH) as conn:
-        for i in range(0, len(tracks), step):
-            while True:
-                try:
-                    track_df = tracks[i : i + step]
-                    df = pd.concat([df, track_df.apply(get_real_song, axis=1)])
-                except requests.exceptions.ReadTimeout:
-                    print("rate limit")
-                    time.sleep(5)
-                    continue
-                break
-            # break
-
-        df = df.drop_duplicates("id").dropna()
-
-        # print(df)
-        song_artist_df = df[["id", "artist_id"]].explode("artist_id")
+        song_artist_df = df[["id", "artist_id"]].drop_duplicates()
         all_artists = song_artist_df["artist_id"].unique()
         genre_df = process_artist_genres(all_artists)
         artist_df = genre_df.drop("genre", axis=1).drop_duplicates()
         genre_df = genre_df.drop("artist_name", axis=1).dropna()
 
-        df = df.drop(["artists", "artist_id"], axis=1)
+        df = df.drop(["artists", "artist_id"], axis=1).drop_duplicates()
         df.to_sql("tracks", conn, if_exists="replace", index=False)
         song_artist_df.to_sql("track_artists", conn, if_exists="replace", index=False)
 
@@ -198,5 +289,8 @@ def process_songs():
 
 
 if __name__ == "__main__":
-    pull_kworb(250000000)
-    process_songs()
+    # pull_kworb(250000000)
+    df = resolve_tracklist(pd.read_csv(KWORB_PATH), 85)
+    df.to_csv("RECHECKTEST.csv")
+    process_songs(df)
+    print(SAMPLE, TOT, REQS)
