@@ -3,3 +3,4 @@ venv
 .cache
 searches_cache.sqlite3
 kworb_cache/*
+discogs.py

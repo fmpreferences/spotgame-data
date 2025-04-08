@@ -17,22 +17,6 @@ load_dotenv()
 
 # order matters
 BUCKET_MAP = {
-    "edm": [
-        "edm",
-        "house",
-        "techno",
-        "step",
-        "dance pop",
-        "big room",
-        " bass",
-        "moombah",
-        "uk garage",
-        "trance",
-        "electro swing",
-        "electronica",
-        "phonk",
-        "synthwave",
-    ],
     "latin": [
         "latin",
         "bolero",
@@ -50,13 +34,41 @@ BUCKET_MAP = {
         "cumbia",
         "mariachi",
     ],
+    "rnb": [
+        "r&b"
+        "soul",
+        "funk",
+        "blues",
+        "disco",
+    ],
+    "edm": [
+        "edm",
+        "house",
+        "techno",
+        "step",
+        "dance pop",
+        "big room",
+        " bass",
+        "moombah",
+        "uk garage",
+        "trance",
+        "electro swing",
+        "electronica",
+        "phonk",
+        "synthwave",
+        'nu disco'
+    ],
     "rock": ["rock", "punk", "metal"],
+    "country": ['country', 'bluegrass'],
+    "pop": ["pop", "afrobeat"],
+    "hiphop": ['hip hop', 'rap'],
+    'indie': ['alternative', 'indie']
 }
 
 DB_PATH = "somewhereonmyvps.sqlite3"
 CACHE_PATH = "searches_cache.sqlite3"
 KWORB_PATH = "KWORB.csv"
-KWORB_CACHE_PATH = 'kworb_cache'
+KWORB_CACHE_PATH = "kworb_cache"
 
 sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials())
 
@@ -64,6 +76,15 @@ WHITELIST_EDM = pd.read_csv("edm_whitelist")["aid"].unique()
 
 
 def create_dbs():
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """CREATE TABLE "artists" (
+                "artist_name"	TEXT,
+                "artist_id"	TEXT,
+                PRIMARY KEY("artist_id")
+            )"""
+        )
     with sqlite3.connect(CACHE_PATH) as conn:
         cur = conn.cursor()
         cur.execute(
@@ -76,11 +97,11 @@ def create_dbs():
             )"""
         )
         cur.execute(
-            '''CREATE TABLE "kworb_cache" (
+            """CREATE TABLE "kworb_cache" (
                 "date"	TEXT,
                 "artist_id"	TEXT,
                 PRIMARY KEY("artist_id")
-            )'''
+            )"""
         )
 
 
@@ -139,10 +160,8 @@ def alnum_only(s):
 
 def clean_junk_words(s):
     return re.sub(
-        r" \(feat\. .*?\)| \(with .*?\)| - (\d+ )?Remaster(ed)?( \d+)?", "", s
+        r" \(feat\. .*?\)| \(with .*?\)| - (\d+ )?Remaster(ed)?( \d+)?| \(.*? Vs\. .*?\)| - .*? vs [a-z-A-Z 0-9]+| - Featuring [a-z-A-Z 0-9]+", "", s
     )
-
-
 
 
 def search_caches(title: str, artist: str, days: int) -> dict:
@@ -185,7 +204,9 @@ def search_caches(title: str, artist: str, days: int) -> dict:
                 {
                     "title": s_title,
                     "artist": s_artist,
-                    "date": (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d"),
+                    "date": (datetime.now() + timedelta(days=days)).strftime(
+                        "%Y-%m-%d"
+                    ),
                     "json_search": json.dumps(reses),
                 }
             ]
@@ -193,7 +214,8 @@ def search_caches(title: str, artist: str, days: int) -> dict:
         df.to_sql("cache", conn, if_exists="append", index=False)
         return reses
 
-def kworb_caches(artist_id: str, days: int) -> Optional[pd.DataFrame] :
+
+def kworb_caches(artist_id: str, days: int) -> Optional[pd.DataFrame]:
     """
     Checks CACHE_PATH if the given artist's page has been pulled from kworb in days d.
     If it has, return it. If not, pull the updated kworb page and save to cache for days d.
@@ -204,7 +226,7 @@ def kworb_caches(artist_id: str, days: int) -> Optional[pd.DataFrame] :
     """
     with sqlite3.connect(CACHE_PATH) as conn:
         df = pd.read_sql(
-            f"select * from cache where artist_id='{artist_id}';",
+            f"select * from kworb_cache where artist_id='{artist_id}';",
             conn,
             parse_dates=True,
         )
@@ -213,18 +235,16 @@ def kworb_caches(artist_id: str, days: int) -> Optional[pd.DataFrame] :
             < datetime.now()
         ):
             cur = conn.cursor()
-            cur.execute(
-                f"delete from cache where artist_id='{artist_id}';"
-            )
+            cur.execute(f"delete from kworb_cache where artist_id='{artist_id}';")
             cur.close()
         # after purging cache, reselect only updated
         df = pd.read_sql(
-            f"select * from cache where artist_id='{artist_id}';",
+            f"select * from kworb_cache where artist_id='{artist_id}';",
             conn,
             parse_dates=True,
         )
         artist_endpoint = f"https://kworb.net/spotify/artist/{artist_id}_songs.html"
-        artist_pth = Path(KWORB_CACHE_PATH, f'{artist_id}.csv')
+        artist_pth = Path(KWORB_CACHE_PATH, f"{artist_id}.csv")
         if not df.empty and artist_pth.exists():
             return pd.read_csv(artist_pth)
         try:
@@ -233,12 +253,14 @@ def kworb_caches(artist_id: str, days: int) -> Optional[pd.DataFrame] :
             df = pd.DataFrame(
                 [
                     {
-                        "date": (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d"),
-                        "artist_id": artist_id
+                        "date": (datetime.now() + timedelta(days=days)).strftime(
+                            "%Y-%m-%d"
+                        ),
+                        "artist_id": artist_id,
                     }
                 ]
             )
-            df.to_sql("cache", conn, if_exists="append", index=False)
+            df.to_sql("kworb_cache", conn, if_exists="append", index=False)
             return temp_df
         except:
             print("Invalid Artist:")
@@ -276,6 +298,10 @@ def result_from_spotify_search(title: str, artist: str, reses: dict) -> List[Any
         if aname in alnum_only(res["name"]) and artist in [
             artist_item["name"] for artist_item in res["artists"]
         ]:
+            try:
+                cover = res["album"]["images"][0]["url"]
+            except IndexError:
+                cover = "INVALID"
             lst.append(
                 (
                     -res["popularity"],
@@ -284,12 +310,15 @@ def result_from_spotify_search(title: str, artist: str, reses: dict) -> List[Any
                     res["id"],
                     [artist_item["name"] for artist_item in res["artists"]],
                     [artist_item["id"] for artist_item in res["artists"]],
+                    cover,
                 )
             )
     return sorted(lst)
 
 
-def get_real_song(row, recheck=defaultdict(list), searchres=defaultdict(list)) -> pd.DataFrame:
+def get_real_song(
+    row, recheck=defaultdict(list), searchres=defaultdict(list)
+) -> pd.DataFrame:
     """
     Vectorized function which matches kworb to actual spotify song id. Returns a df which has
     the spotify id and a row for each individual artist, rdbms style
@@ -300,21 +329,22 @@ def get_real_song(row, recheck=defaultdict(list), searchres=defaultdict(list)) -
     :returns: df which each row represents the id of the song and one artist on the song
     """
     title, artist, rank = row["title"], row["Artist"], row["Occurrence"]
-    reses = search_caches(title, artist, 7)
+    reses = search_caches(title, artist, 6)
     lst = result_from_spotify_search(title, artist, reses)
 
     # get all viable candidates from spotify search
     try:
         # filter candidates which might be too close
         first = lst[rank]
-        for lpopularity, _, lname, _, lartists, lartistids in lst:
+        for lpopularity, _, lname, _, lartists, lartistids, _ in lst:
             # if the result with the closest popularity that is not the same exact song
             # (name/artists) is too close in popularity, add for processing
             # may break if there is any song with 3 editions under the threshold
             if clean_junk_words(lname).lower() == clean_junk_words(first[2]).lower():
                 continue
-            if set(lartistids) == set(first[-1]):
+            if set(lartistids) == set(first[5]):
                 continue
+
             # need the original cached search to get the "correct" one
             # other ones are just ease of access and or not accesible anymore
             if abs(lpopularity - first[0]) <= 12:
@@ -322,12 +352,15 @@ def get_real_song(row, recheck=defaultdict(list), searchres=defaultdict(list)) -
                     if t_artist != artist:
                         continue
                     recheck[t_artist_id].append(
-                        (title, rank, first[3], row["Streams"], artist, len(first[-1]))
+                        (title, rank, first[3], row["Streams"], artist, len(first[5]))
                     )
                     break
                 searchres[title] = lst
             break
-        _, release_date, track_name, uri, artist_names, artist_uris = lst[rank]
+
+        _, release_date, track_name, uri, artist_names, artist_uris, album_art = lst[
+            rank
+        ]
     except IndexError:
         print(title, artist, rank)
         return None
@@ -340,6 +373,7 @@ def get_real_song(row, recheck=defaultdict(list), searchres=defaultdict(list)) -
                 "date": release_date,
                 "artists": t_artist_name,
                 "artist_id": t_artist_id,
+                "album_art": album_art,
             }
             for t_artist_name, t_artist_id in zip(artist_names, artist_uris)
         ]
@@ -381,8 +415,6 @@ def process_artist_genres(artists_lst):
     return df
 
 
-
-
 def resolve_and_save_track_info(tracks: pd.DataFrame, step: int):
     """
     Takes a df of tracks from kworb and a step size (max how many to roll
@@ -397,8 +429,6 @@ def resolve_and_save_track_info(tracks: pd.DataFrame, step: int):
     recheck = defaultdict(list)
     searchres = defaultdict(list)
     for i in range(0, len(tracks), step):
-        # execution with "vectorized" search in increments of step
-        # by way of df.apply
         while True:
             try:
                 track_df = tracks[i : i + step]
@@ -434,12 +464,14 @@ def resolve_and_save_track_info(tracks: pd.DataFrame, step: int):
             temp_df = kworb_caches(artist, 3)
             if temp_df is None:
                 continue
+
             title, rank, chosen, streams, og_artist, no_artists = track
             valids = np.nonzero(
                 temp_df["Song Title"]
                 .str.lower()
                 .str.contains(title.lower(), regex=False)
             )
+
             try:
                 valid_rank = valids[0][rank]
             except IndexError:
@@ -448,16 +480,28 @@ def resolve_and_save_track_info(tracks: pd.DataFrame, step: int):
                 continue
             row = temp_df.iloc[valid_rank]
             newtitle = re.sub(r"^\*", "", row["Song Title"])
-            newdate, newid, newartists, newartistids = 0, chosen, [], []
-            reses = search_caches(title, og_artist, 7 )
+            newdate, newid, new_album_art = 0, chosen, ""
+            newartists, newartistids = [], []
+
+            reses = search_caches(title, og_artist, 7)
             search_res = result_from_spotify_search(title, og_artist, reses)
-            for _, s_date, s_title, s_id, s_artists, s_artist_id in search_res:
+            for (
+                _,
+                s_date,
+                s_title,
+                s_id,
+                s_artists,
+                s_artist_id,
+                s_album_art,
+            ) in search_res:
                 if s_title.lower() == newtitle.lower() and artist in s_artist_id:
                     newdate, newid = s_date, s_id
                     newartists, newartistids = s_artists, s_artist_id
+                    new_album_art = s_album_art
                     break
             if newid == chosen:
                 continue
+
             # drop exactly the first amount of the song's id with its artists and renew it
             df = df.drop(np.nonzero(df["id"] == chosen)[0][:no_artists].tolist())
             reconstructed_df = pd.DataFrame(
@@ -469,6 +513,7 @@ def resolve_and_save_track_info(tracks: pd.DataFrame, step: int):
                         "id": newid + "%MOD",
                         "artist_id": t_artist_id,
                         "date": newdate,
+                        "album_art": new_album_art,
                     }
                     for t_artist, t_artist_id in zip(newartists, newartistids)
                 ]
@@ -479,6 +524,7 @@ def resolve_and_save_track_info(tracks: pd.DataFrame, step: int):
     df["id"] = df["id"].str.replace("%MOD", "")
 
     df = df.drop_duplicates(["id", "artist_id"]).dropna()
+    df['title'] = df['title'].apply(clean_junk_words)
 
     with sqlite3.connect(DB_PATH) as conn:
         song_artist_df = df[["id", "artist_id"]]
@@ -514,6 +560,6 @@ def process_buckets():
 
 if __name__ == "__main__":
     # pull_kworb(250000000)
-    # resolve_and_save_track_info(pd.read_csv(KWORB_PATH), 100)
-    process_genres()
-    process_buckets()
+    resolve_and_save_track_info(pd.read_csv(KWORB_PATH), 100)
+    # process_genres()
+    # process_buckets()
