@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, List, Optional
+from pandas.core.window.ewm import common
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 import pandas as pd
@@ -12,6 +13,8 @@ from dotenv import load_dotenv
 from collections import defaultdict
 import json
 import numpy as np
+
+from discogs import discogs
 
 load_dotenv()
 
@@ -35,7 +38,7 @@ BUCKET_MAP = {
         "mariachi",
     ],
     "rnb": [
-        "r&b"
+        "r&b",
         "soul",
         "funk",
         "blues",
@@ -56,19 +59,21 @@ BUCKET_MAP = {
         "electronica",
         "phonk",
         "synthwave",
-        'nu disco'
+        "nu disco",
     ],
     "rock": ["rock", "punk", "metal"],
-    "country": ['country', 'bluegrass'],
+    "country": ["country", "bluegrass"],
     "pop": ["pop", "afrobeat"],
-    "hiphop": ['hip hop', 'rap'],
-    'indie': ['alternative', 'indie']
+    "hiphop": ["hip hop", "rap"],
+    "indie": ["alternative", "indie"],
 }
 
 DB_PATH = "somewhereonmyvps.sqlite3"
 CACHE_PATH = "searches_cache.sqlite3"
 KWORB_PATH = "KWORB.csv"
 KWORB_CACHE_PATH = "kworb_cache"
+
+DISCOGS_PATH = "discogs_cache.sqlite3"
 
 sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials())
 
@@ -84,6 +89,17 @@ def create_dbs():
                 "artist_id"	TEXT,
                 PRIMARY KEY("artist_id")
             )"""
+        )
+        cur.execute(
+            """CREATE TABLE "tracks" (
+                "id"	TEXT,
+                "streams"	INTEGER,
+                "title"	TEXT,
+                "date"	INTEGER,
+                "album_art"	TEXT,
+                PRIMARY KEY("id")
+            )
+            """
         )
     with sqlite3.connect(CACHE_PATH) as conn:
         cur = conn.cursor()
@@ -102,6 +118,17 @@ def create_dbs():
                 "artist_id"	TEXT,
                 PRIMARY KEY("artist_id")
             )"""
+        )
+    with sqlite3.connect(DISCOGS_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            '''CREATE TABLE "cache" (
+                "date"	TEXT,
+                "artist"	TEXT,
+                "latest_genres"	TEXT,
+                PRIMARY KEY("artist")
+            )
+            '''
         )
 
 
@@ -160,7 +187,9 @@ def alnum_only(s):
 
 def clean_junk_words(s):
     return re.sub(
-        r" \(feat\. .*?\)| \(with .*?\)| - (\d+ )?Remaster(ed)?( \d+)?| \(.*? Vs\. .*?\)| - .*? vs [a-z-A-Z 0-9]+| - Featuring [a-z-A-Z 0-9]+", "", s
+        r" \(feat\. .*?\)| \(with .*?\)| - (\d+ )?Remaster(ed)?( \d+)?| \(.*? Vs\. .*?\)| - .*? vs [a-z-A-Z 0-9]+| - Featuring [a-z-A-Z 0-9]+",
+        "",
+        s,
     )
 
 
@@ -269,8 +298,6 @@ def kworb_caches(artist_id: str, days: int) -> Optional[pd.DataFrame]:
 
 
 def bucket(row):
-    # EDM first since i assume whatever has EDM on it is prolly edm
-    # latin next to delete latin types of rock & pop
     row["bucket"] = None
     for broad, genre in BUCKET_MAP.items():
         for subgenre in genre:
@@ -381,6 +408,68 @@ def get_real_song(
     return return_df
 
 
+def search_discogs(artist, days):
+    with sqlite3.connect(DISCOGS_PATH) as conn:
+        df = pd.read_sql(
+            f"select * from cache where artist=\"{artist}\";",
+            conn,
+            parse_dates=True,
+        )
+        if not df.empty and np.all(
+            df["date"].apply(lambda x: datetime.strptime(x, "%Y-%m-%d"))
+            < datetime.now()
+        ):
+            cur = conn.cursor()
+            cur.execute(f"delete from cache where artist=\"{artist}\";")
+            cur.close()
+        # after purging cache, reselect only updated
+        df = pd.read_sql(
+            f"select * from cache where artist=\"{artist}\";",
+            conn,
+            parse_dates=True,
+        )
+        if not df.empty:
+            return json.loads(df['latest_genres'].unique().tolist()[0])
+        howmany = 6
+        max_tries = 250
+        for i in range(max_tries):
+            try:
+                alb_obj = discogs.search(artist, type='artist').page(1)[0].releases.sort('year', order='desc').page(1)
+                howmany = min(len(alb_obj), howmany)
+                alb_obj = alb_obj[:howmany]
+                genres = [set(rel.styles) for rel in alb_obj]
+                time.sleep(15.25)
+                print(artist)
+                common_genres = []
+                for i in range(howmany):
+                    for j in range(i+1, howmany):
+                        common_genres.append(genres[i] & genres[j])
+                reses = list(set([y for genres in common_genres for y in genres]))
+                if not reses:
+                    reses = alb_obj[0].genres
+            except json.JSONDecodeError:
+                print(artist)
+                print(f'{artist} Json Error!')
+                return [None]
+            except IndexError:
+                print(f'{artist} No result!')
+                return [None]
+            df = pd.DataFrame(
+                [
+                    {
+                        "artist": artist,
+                        "date": (datetime.now() + timedelta(days=days)).strftime(
+                            "%Y-%m-%d"
+                        ),
+                        "latest_genres": json.dumps(reses),
+                    }
+                ]
+            )
+            df.to_sql("cache", conn, if_exists="append", index=False)
+            return reses
+        return [None]
+
+
 def process_artist_genres(artists_lst):
     """
     Takes a list of artists and associates them with the genres assigned to them
@@ -396,10 +485,7 @@ def process_artist_genres(artists_lst):
         for artist in artists_sp["artists"]:
             temp_genres = artist["genres"]
             if not temp_genres:
-                if artist["id"] in WHITELIST_EDM:
-                    temp_genres = ["edm"]
-                else:
-                    temp_genres = [None]
+                temp_genres = search_discogs(artist['name'], 69)
             df2 = pd.DataFrame(
                 [
                     {
@@ -524,7 +610,7 @@ def resolve_and_save_track_info(tracks: pd.DataFrame, step: int):
     df["id"] = df["id"].str.replace("%MOD", "")
 
     df = df.drop_duplicates(["id", "artist_id"]).dropna()
-    df['title'] = df['title'].apply(clean_junk_words)
+    df["title"] = df["title"].apply(clean_junk_words)
 
     with sqlite3.connect(DB_PATH) as conn:
         song_artist_df = df[["id", "artist_id"]]
@@ -538,6 +624,7 @@ def process_genres():
     with sqlite3.connect(DB_PATH) as conn:
         track_artist_df = pd.read_sql("select * from track_artists;", conn)
         all_artists = track_artist_df["artist_id"].unique()
+        print(len(all_artists))
         genre_df = process_artist_genres(all_artists)
         artist_df = genre_df.drop("genre", axis=1).drop_duplicates()
         genre_df = genre_df.drop("artist_name", axis=1).dropna()
@@ -559,7 +646,7 @@ def process_buckets():
 
 
 if __name__ == "__main__":
-    # pull_kworb(250000000)
-    resolve_and_save_track_info(pd.read_csv(KWORB_PATH), 100)
+    # pull_kworb(325000000)
+    # resolve_and_save_track_info(pd.read_csv(KWORB_PATH), 100)
     # process_genres()
-    # process_buckets()
+    process_buckets()
