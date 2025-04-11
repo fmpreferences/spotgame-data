@@ -1,7 +1,6 @@
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, List, Optional
-from pandas.core.window.ewm import common
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 import pandas as pd
@@ -77,8 +76,6 @@ DISCOGS_PATH = "discogs_cache.sqlite3"
 
 sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials())
 
-WHITELIST_EDM = pd.read_csv("edm_whitelist")["aid"].unique()
-
 
 def create_dbs():
     with sqlite3.connect(DB_PATH) as conn:
@@ -122,13 +119,13 @@ def create_dbs():
     with sqlite3.connect(DISCOGS_PATH) as conn:
         cur = conn.cursor()
         cur.execute(
-            '''CREATE TABLE "cache" (
+            """CREATE TABLE "cache" (
                 "date"	TEXT,
                 "artist"	TEXT,
                 "latest_genres"	TEXT,
                 PRIMARY KEY("artist")
             )
-            '''
+            """
         )
 
 
@@ -315,7 +312,8 @@ def result_from_spotify_search(title: str, artist: str, reses: dict) -> List[Any
     :param title: title as displayed on kworb songs endpoint
     :param artist: artist as displayed on kworb songs endpoint
     :param reses: spotify api search result
-    :returns: list of -pop, rdate, title, id, artist_list, artist_id_list
+    :returns: list of -pop, rdate, title, id, artist_list, artist_id_list,
+    artist index, album cover
     sorted by best result first
     """
     lst = []
@@ -329,23 +327,40 @@ def result_from_spotify_search(title: str, artist: str, reses: dict) -> List[Any
                 cover = res["album"]["images"][0]["url"]
             except IndexError:
                 cover = "INVALID"
+            rdate = None
+            album_rdate = res["album"]["release_date"]
+            if len(album_rdate) == 4:
+                if album_rdate == "0000":
+                    album_rdate = "0001"
+                rdate = date(int(album_rdate), 12, 31)
+            elif len(album_rdate) == 7:
+                rdate = datetime.strptime(album_rdate, "%Y-%m")
+                # shitty jank function to find last day of this month
+                rdate = date(
+                    rdate.year,
+                    rdate.month,
+                    (
+                        date(rdate.year, (rdate.month) % 12 + 1, 1) - timedelta(days=1)
+                    ).day,
+                )
+            else:
+                rdate = datetime.strptime(album_rdate, "%Y-%m-%d").date()
             lst.append(
                 (
                     -res["popularity"],
-                    int(res["album"]["release_date"][:4]),
+                    rdate,
                     res["name"],
                     res["id"],
                     [artist_item["name"] for artist_item in res["artists"]],
                     [artist_item["id"] for artist_item in res["artists"]],
+                    list(range(len(res["artists"]))),
                     cover,
                 )
             )
     return sorted(lst)
 
 
-def get_real_song(
-    row, recheck=defaultdict(list), searchres=defaultdict(list)
-) -> pd.DataFrame:
+def get_real_song(row, recheck=defaultdict(list)) -> pd.DataFrame:
     """
     Vectorized function which matches kworb to actual spotify song id. Returns a df which has
     the spotify id and a row for each individual artist, rdbms style
@@ -363,7 +378,7 @@ def get_real_song(
     try:
         # filter candidates which might be too close
         first = lst[rank]
-        for lpopularity, _, lname, _, lartists, lartistids, _ in lst:
+        for lpopularity, _, lname, _, lartists, lartistids, _, _ in lst:
             # if the result with the closest popularity that is not the same exact song
             # (name/artists) is too close in popularity, add for processing
             # may break if there is any song with 3 editions under the threshold
@@ -382,27 +397,25 @@ def get_real_song(
                         (title, rank, first[3], row["Streams"], artist, len(first[5]))
                     )
                     break
-                searchres[title] = lst
             break
 
-        _, release_date, track_name, uri, artist_names, artist_uris, album_art = lst[
-            rank
-        ]
+        rel = lst[rank]
     except IndexError:
         print(title, artist, rank)
         return None
     return_df = pd.DataFrame(
         [
             {
-                "id": uri,
+                "id": rel[3],
                 "streams": row["Streams"],
-                "title": track_name,
-                "date": release_date,
+                "title": rel[2],
+                "date": rel[1],
                 "artists": t_artist_name,
                 "artist_id": t_artist_id,
-                "album_art": album_art,
+                "artist_index": t_artist_idx,
+                "album_art": rel[7],
             }
-            for t_artist_name, t_artist_id in zip(artist_names, artist_uris)
+            for t_artist_name, t_artist_id, t_artist_idx in zip(*rel[4:7])
         ]
     )
     return return_df
@@ -411,7 +424,7 @@ def get_real_song(
 def search_discogs(artist, days):
     with sqlite3.connect(DISCOGS_PATH) as conn:
         df = pd.read_sql(
-            f"select * from cache where artist=\"{artist}\";",
+            f'select * from cache where artist="{artist}";',
             conn,
             parse_dates=True,
         )
@@ -420,21 +433,26 @@ def search_discogs(artist, days):
             < datetime.now()
         ):
             cur = conn.cursor()
-            cur.execute(f"delete from cache where artist=\"{artist}\";")
+            cur.execute(f'delete from cache where artist="{artist}";')
             cur.close()
         # after purging cache, reselect only updated
         df = pd.read_sql(
-            f"select * from cache where artist=\"{artist}\";",
+            f'select * from cache where artist="{artist}";',
             conn,
             parse_dates=True,
         )
         if not df.empty:
-            return json.loads(df['latest_genres'].unique().tolist()[0])
+            return json.loads(df["latest_genres"].unique().tolist()[0])
         howmany = 6
         max_tries = 250
         for i in range(max_tries):
             try:
-                alb_obj = discogs.search(artist, type='artist').page(1)[0].releases.sort('year', order='desc').page(1)
+                alb_obj = (
+                    discogs.search(artist, type="artist")
+                    .page(1)[0]
+                    .releases.sort("year", order="desc")
+                    .page(1)
+                )
                 howmany = min(len(alb_obj), howmany)
                 alb_obj = alb_obj[:howmany]
                 genres = [set(rel.styles) for rel in alb_obj]
@@ -442,17 +460,17 @@ def search_discogs(artist, days):
                 print(artist)
                 common_genres = []
                 for i in range(howmany):
-                    for j in range(i+1, howmany):
+                    for j in range(i + 1, howmany):
                         common_genres.append(genres[i] & genres[j])
                 reses = list(set([y for genres in common_genres for y in genres]))
                 if not reses:
                     reses = alb_obj[0].genres
             except json.JSONDecodeError:
                 print(artist)
-                print(f'{artist} Json Error!')
+                print(f"{artist} Json Error!")
                 return [None]
             except IndexError:
-                print(f'{artist} No result!')
+                print(f"{artist} No result!")
                 return [None]
             df = pd.DataFrame(
                 [
@@ -485,7 +503,7 @@ def process_artist_genres(artists_lst):
         for artist in artists_sp["artists"]:
             temp_genres = artist["genres"]
             if not temp_genres:
-                temp_genres = search_discogs(artist['name'], 69)
+                temp_genres = search_discogs(artist["name"], 69)
             df2 = pd.DataFrame(
                 [
                     {
@@ -513,14 +531,13 @@ def resolve_and_save_track_info(tracks: pd.DataFrame, step: int):
     """
     df = pd.DataFrame()
     recheck = defaultdict(list)
-    searchres = defaultdict(list)
     for i in range(0, len(tracks), step):
         while True:
             try:
                 track_df = tracks[i : i + step]
 
                 def get_real_song_dicts(x):
-                    return get_real_song(x, recheck, searchres)
+                    return get_real_song(x, recheck)
 
                 # shitty jank shit that I had to do to even
                 # coherently explode the artists
@@ -561,31 +578,21 @@ def resolve_and_save_track_info(tracks: pd.DataFrame, step: int):
             try:
                 valid_rank = valids[0][rank]
             except IndexError:
-                print("IndexError at Reconstruction")
+                print("IndexError at reconstruction:")
                 print(title, rank, chosen, streams, no_artists)
                 continue
             row = temp_df.iloc[valid_rank]
             newtitle = re.sub(r"^\*", "", row["Song Title"])
-            newdate, newid, new_album_art = 0, chosen, ""
-            newartists, newartistids = [], []
+            # date, title, id, artist_names, artist_ids, artist_indexes, albumart
+            new_song_info = [date(1, 12, 31), newtitle, chosen, [], [], [], ""]
 
             reses = search_caches(title, og_artist, 7)
             search_res = result_from_spotify_search(title, og_artist, reses)
-            for (
-                _,
-                s_date,
-                s_title,
-                s_id,
-                s_artists,
-                s_artist_id,
-                s_album_art,
-            ) in search_res:
-                if s_title.lower() == newtitle.lower() and artist in s_artist_id:
-                    newdate, newid = s_date, s_id
-                    newartists, newartistids = s_artists, s_artist_id
-                    new_album_art = s_album_art
+            for res in search_res:
+                if res[2].lower() == newtitle.lower() and artist in res[5]:
+                    new_song_info = res[1:]
                     break
-            if newid == chosen:
+            if new_song_info[2] == chosen:
                 continue
 
             # drop exactly the first amount of the song's id with its artists and renew it
@@ -596,12 +603,13 @@ def resolve_and_save_track_info(tracks: pd.DataFrame, step: int):
                         "streams": streams,
                         "title": newtitle,
                         "artists": t_artist,
-                        "id": newid + "%MOD",
+                        "id": f"{new_song_info[2]}%MOD",
                         "artist_id": t_artist_id,
-                        "date": newdate,
-                        "album_art": new_album_art,
+                        "artist_index": t_artist_idx,
+                        "date": new_song_info[0],
+                        "album_art": new_song_info[6],
                     }
-                    for t_artist, t_artist_id in zip(newartists, newartistids)
+                    for t_artist, t_artist_id, t_artist_idx in zip(*new_song_info[3:6])
                 ]
             )
             reconstructed.append(reconstructed_df)
@@ -613,9 +621,9 @@ def resolve_and_save_track_info(tracks: pd.DataFrame, step: int):
     df["title"] = df["title"].apply(clean_junk_words)
 
     with sqlite3.connect(DB_PATH) as conn:
-        song_artist_df = df[["id", "artist_id"]]
+        song_artist_df = df[["id", "artist_id", "artist_index"]]
 
-        df = df.drop(["artists", "artist_id"], axis=1).drop_duplicates()
+        df = df.drop(["artists", "artist_id", "artist_index"], axis=1).drop_duplicates()
         df.to_sql("tracks", conn, if_exists="replace", index=False)
         song_artist_df.to_sql("track_artists", conn, if_exists="replace", index=False)
 
@@ -646,7 +654,7 @@ def process_buckets():
 
 
 if __name__ == "__main__":
-    # pull_kworb(325000000)
-    # resolve_and_save_track_info(pd.read_csv(KWORB_PATH), 100)
+    # pull_kworb(300000000)
+    resolve_and_save_track_info(pd.read_csv(KWORB_PATH), 100)
     # process_genres()
-    process_buckets()
+    # process_buckets()
