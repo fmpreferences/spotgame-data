@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import requests
 import spotipy
-from discogs import discogs, discogs_token
+from discogs import discogs_token
 from dotenv import load_dotenv
 from spotipy.oauth2 import SpotifyClientCredentials, urllibparse
 
@@ -749,12 +749,12 @@ def process_spotify_stuff():
             "artists_genres", conn, if_exists="replace", index=False
         )
         track_album_df = pd.read_sql(
-           "select distinct album_id from tracks;",
-           conn,
+            "select distinct album_id from tracks a join track_albums b on a.id=b.id;",
+            conn,
         )
         print(f"number of albums: {len(track_album_df['album_id'].unique())}")
         albums_df = process_albums(
-           track_album_df["album_id"].unique()
+            track_album_df["album_id"].unique()
         ).drop_duplicates()
         albums_df.to_sql("albums", conn, if_exists="replace", index=False)
 
@@ -782,55 +782,47 @@ def process_genres():
         print(len(artist_single_df))
         single_genre_df = process_x_genres(artist_single_df, "title", "id")
         single_genre_df.dropna().to_sql(
-            "single_genres", conn, if_exists="replace", index=False
+            "track_genres", conn, if_exists="replace", index=False
         )
 
 
 def process_buckets():
-    dfs = []
     with sqlite3.connect(DB_PATH) as conn:
-        tracks = pd.read_sql("select id from tracks;", conn)
-        single_genre_df = pd.read_sql(
-            "select a.id, genre from tracks a join single_genres b on a.id = b.id;",
-            conn,
+        new_artist_genre_df = pd.concat(
+            [
+                pd.read_sql(
+                    "select a.artist_id, genre from artists a join track_artists b on a.artist_id = b.artist_id join track_genres c on b.id = c.id;",
+                    conn,
+                ),
+                pd.read_sql(
+                    "select a.artist_id, genre from artists a join albums b on a.artist_id = b.artist_id join album_genres c on b.album_id = c.album_id",
+                    conn,
+                ),
+            ]
+        ).apply(bucket, axis=1)
+
+        df_genres = (
+            new_artist_genre_df.groupby(["artist_id", "bucket"]).size().reset_index()
         )
-        album_genre_df = pd.read_sql(
-            "select a.id, genre from tracks a join track_albums b on a.id = b.id join album_genres c on b.album_id = c.album_id;",
-            conn,
-        )
+        df_artists = new_artist_genre_df.groupby(["artist_id"]).size().reset_index()
+
+        df = df_genres.merge(df_artists, "left", ["artist_id"])
+        df["Prop"] = df["0_x"] / df["0_y"]
+
+        df = df[df["Prop"] >= 0.5]
         artist_genre_df = pd.read_sql(
-            "select a.id, genre from tracks a join track_artists b on a.id = b.id join artists_genres c on b.artist_id = c.artist_id;",
+            "select * from track_artists;",
             conn,
         )
-
-        new_artist_genre_df = pd.concat([
-            pd.read_sql("select a.artist_id, genre from artists a join track_artists b on a.artist_id = b.artist_id join single_genres c on b.id = c.id;"),
-            pd.read_sql("select a.artist_id, genre from artists a join track_artists b on a.artist_id = b.artist_id join album_genres c on b.id = c.id;"),
-            ])
-
-        for i, row in tracks.iterrows():
-            df = single_genre_df[single_genre_df["id"] == row["id"]]
-            df = df.apply(bucket, axis=1)
-            if not df.empty:
-                dfs.append(df)
-                continue
-            df = album_genre_df[album_genre_df["id"] == row["id"]]
-            df = df.apply(bucket, axis=1)
-            if not df.empty:
-                dfs.append(df)
-                continue
-            df = artist_genre_df[artist_genre_df["id"] == row["id"]]
-            df = df.apply(bucket, axis=1)
-            if not df.empty:
-                dfs.append(df)
-        pd.concat(dfs).dropna().drop_duplicates().to_sql(
+        df = df.merge(artist_genre_df, "inner", "artist_id")
+        df[["id", "bucket"]].dropna().drop_duplicates().to_sql(
             "buckets", conn, if_exists="replace", index=False
         )
 
 
 if __name__ == "__main__":
-    # pull_kworb(300000000)
-    # resolve_and_save_track_info(pd.read_csv(KWORB_PATH), 100)
-    # process_spotify_stuff()
-    # process_genres()
+    #pull_kworb(250000000)
+    #resolve_and_save_track_info(pd.read_csv(KWORB_PATH), 100)
+    #process_spotify_stuff()
+    #process_genres()
     process_buckets()
