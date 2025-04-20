@@ -49,11 +49,9 @@ BUCKET_MAP = {
         "house",
         "techno",
         "step",
-        "dance pop",
+        # "dance pop",
         "big room",
         " bass",
-        "moombah",
-        "uk garage",
         "trance",
         "electro swing",
         "electronica",
@@ -63,9 +61,8 @@ BUCKET_MAP = {
     ],
     "rock": ["rock", "punk", "metal"],
     "country": ["country", "bluegrass"],
-    "pop": ["pop", "afrobeat"],
+    "pop": ["pop", "afrobeat", "ballad"],
     "hiphop": ["hip hop", "rap"],
-    "indie": ["alternative", "indie"],
 }
 
 DB_PATH = "somewhereonmyvps.sqlite3"
@@ -324,7 +321,7 @@ def process_albums(albums):
 
 
 def bucket(row):
-    row["bucket"] = None
+    row["bucket"] = "other"
     for broad, genre in BUCKET_MAP.items():
         for subgenre in genre:
             if subgenre in row["genre"].lower():
@@ -423,7 +420,7 @@ def get_real_song(row, recheck=defaultdict(list)) -> pd.DataFrame | NoneType:
 
             # need the original cached search to get the "correct" one
             # other ones are just ease of access and or not accesible anymore
-            if abs(lst_item[0] - first[0]) <= 12:
+            if abs(lst_item[0] - first[0]) <= 15:
                 for t_artist, t_artist_id in zip(lst_item[4], lst_item[5]):
                     if t_artist != artist:
                         continue
@@ -798,8 +795,16 @@ def process_buckets():
                     "select a.artist_id, genre from artists a join albums b on a.artist_id = b.artist_id join album_genres c on b.album_id = c.album_id",
                     conn,
                 ),
+                pd.read_sql(
+                    "select artist_id, genre from artists_genres;",
+                    conn,
+                ),
             ]
         ).apply(bucket, axis=1)
+
+        new_artist_genre_df = new_artist_genre_df[
+            new_artist_genre_df["bucket"] != "other"
+        ]
 
         df_genres = (
             new_artist_genre_df.groupby(["artist_id", "bucket"]).size().reset_index()
@@ -809,20 +814,23 @@ def process_buckets():
         df = df_genres.merge(df_artists, "left", ["artist_id"])
         df["Prop"] = df["0_x"] / df["0_y"]
 
-        df = df[df["Prop"] >= 0.5]
-        artist_genre_df = pd.read_sql(
+        df_small = df[df["0_y"] <= 16]
+        df_big = df[df["0_y"] > 16]
+
+        df = pd.concat([df_small[df_small["Prop"] > 0.5], df_big[df_big["Prop"] > 0.3333]])
+        track_artists_df = pd.read_sql(
             "select * from track_artists;",
             conn,
         )
-        df = df.merge(artist_genre_df, "inner", "artist_id")
-        df[["id", "bucket"]].dropna().drop_duplicates().to_sql(
+        df = df.merge(track_artists_df, "right", "artist_id")
+        df[["id", "bucket"]].fillna('other').drop_duplicates().to_sql(
             "buckets", conn, if_exists="replace", index=False
         )
 
 
 if __name__ == "__main__":
-    #pull_kworb(250000000)
-    #resolve_and_save_track_info(pd.read_csv(KWORB_PATH), 100)
-    #process_spotify_stuff()
-    #process_genres()
+    # pull_kworb(250000000)
+    # resolve_and_save_track_info(pd.read_csv(KWORB_PATH), 100)
+    # process_spotify_stuff()
+    # process_genres()
     process_buckets()
