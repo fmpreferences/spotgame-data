@@ -15,6 +15,7 @@ import spotipy
 from discogs import discogs_token
 from dotenv import load_dotenv
 from spotipy.oauth2 import SpotifyClientCredentials, urllibparse
+import subprocess
 
 load_dotenv()
 
@@ -817,15 +818,39 @@ def process_buckets():
         df_small = df[df["0_y"] <= 16]
         df_big = df[df["0_y"] > 16]
 
-        df = pd.concat([df_small[df_small["Prop"] > 0.5], df_big[df_big["Prop"] > 0.3333]])
+        df = pd.concat(
+            [df_small[df_small["Prop"] > 0.5], df_big[df_big["Prop"] > 0.3333]]
+        )
         track_artists_df = pd.read_sql(
             "select * from track_artists;",
             conn,
         )
         df = df.merge(track_artists_df, "right", "artist_id")
-        df[["id", "bucket"]].fillna('other').drop_duplicates().to_sql(
+        df[["id", "bucket"]].fillna("other").drop_duplicates().to_sql(
             "buckets", conn, if_exists="replace", index=False
         )
+
+
+def crontab_commit():
+    if Path("spotgame.sql").exists():
+        Path("spotgame.sql").rename("spotgamebak.sql")
+    subprocess.run("sqlite3 somewhereonmyvps.sqlite3 .dump > spotgame.sql", shell=True)
+    with open("spotgame.sql") as s1, open("spotgamebak.sql") as s2, open(
+        "spotdiff.sql", "w"
+    ) as sd:
+        l1, l2 = s1.readlines(), s2.readlines()
+        res = set(l1) ^ set(l2)
+        ex = f'''PRAGMA foreign_keys=OFF;
+CREATE TABLE IF NOT EXISTS "tracks" (
+    "id" TEXT,
+    "streams" INTEGER,
+    "title" TEXT,
+    "date" DATE,
+    "album_art" TEXT
+);
+{''.join(res)}
+        '''
+        sd.write(ex)
 
 
 if __name__ == "__main__":
@@ -833,4 +858,5 @@ if __name__ == "__main__":
     # resolve_and_save_track_info(pd.read_csv(KWORB_PATH), 100)
     # process_spotify_stuff()
     # process_genres()
-    process_buckets()
+    # process_buckets()
+    crontab_commit()
