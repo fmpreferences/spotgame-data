@@ -5,7 +5,6 @@ import time
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from types import NoneType
 from typing import Any, List, Optional
 
 import numpy as np
@@ -40,6 +39,7 @@ BUCKET_MAP = {
     ],
     "rnb": [
         "r&b",
+        "rnb",
         "soul",
         "funk",
         "blues",
@@ -67,6 +67,7 @@ BUCKET_MAP = {
 }
 
 DB_PATH = "somewhereonmyvps.sqlite3"
+PROD_PATH = 'prod.sqlite3'
 CACHE_PATH = "searches_cache.sqlite3"
 KWORB_PATH = "KWORB.csv"
 KWORB_CACHE_PATH = "kworb_cache"
@@ -388,7 +389,7 @@ def result_from_spotify_search(title: str, artist: str, reses: dict) -> List[Any
     return sorted(lst)
 
 
-def get_real_song(row, recheck=defaultdict(list)) -> pd.DataFrame | NoneType:
+def get_real_song(row, recheck=defaultdict(list)) -> pd.DataFrame | None:
     """
     Vectorized function which matches kworb to actual spotify song id. Returns a df which has
     the spotify id and a row for each individual artist, rdbms style
@@ -740,6 +741,8 @@ def process_spotify_stuff():
             conn,
         )
         artist_df = process_artists(track_artist_df["artist_id"])
+        # id column first for auto script
+        artist_df = artist_df.loc[:, ['artist_id', 'artist_name']]
         artist_df.drop("genre", axis=1).drop_duplicates().to_sql(
             "artists", conn, if_exists="replace", index=False
         )
@@ -785,7 +788,7 @@ def process_genres():
 
 
 def process_buckets():
-    with sqlite3.connect(DB_PATH) as conn:
+    with sqlite3.connect(DB_PATH) as conn, sqlite3.connect(PROD_PATH) as prod:
         new_artist_genre_df = pd.concat(
             [
                 pd.read_sql(
@@ -826,8 +829,21 @@ def process_buckets():
             conn,
         )
         df = df.merge(track_artists_df, "right", "artist_id")
-        df[["id", "bucket"]].fillna("other").drop_duplicates().to_sql(
+        bucket_df = df[["id", "bucket"]].fillna("other").drop_duplicates()
+        bucket_df.to_sql(
             "buckets", conn, if_exists="replace", index=False
+        )
+        track_artists_df.to_sql("track_artists", prod, if_exists='replace', index=False)
+        pd.read_sql(
+            "select * from tracks;",
+            conn,
+        ).to_sql("tracks", prod, if_exists='replace', index=False)
+        pd.read_sql(
+            "select * from artists;",
+            conn,
+        ).to_sql("artists", prod, if_exists='replace', index=False)
+        bucket_df.to_sql(
+            "buckets", prod, if_exists="replace", index=False
         )
 
 
@@ -838,25 +854,23 @@ def crontab_commit():
     with open("spotgame.sql") as s1, open("spotgamebak.sql") as s2, open(
         "spotdiff.sql", "w"
     ) as sd:
-        l1, l2 = s1.readlines(), s2.readlines()
-        res = set(l1) ^ set(l2)
-        ex = f'''PRAGMA foreign_keys=OFF;
-CREATE TABLE IF NOT EXISTS "tracks" (
-    "id" TEXT,
-    "streams" INTEGER,
-    "title" TEXT,
-    "date" DATE,
-    "album_art" TEXT
-);
-{''.join(res)}
-        '''
+        l1, l2 = s1.readlines(),  s2.readlines()
+        removal = set(l2) - set(l1)
+        addition = set(l1) - set(l2)
+        print([remove for remove in removal if "INSERT" not in remove])
+        removal = [f"delete from {removing.split(' ', 3)[2]} where id={removing.split('(', 1)[1].split(',')[0]};\n" for removing in removal]
+        ex = f"""
+PRAGMA foreign_keys=OFF;
+{''.join(removal)}
+{''.join(addition)}
+        """
         sd.write(ex)
 
 
 if __name__ == "__main__":
-    # pull_kworb(250000000)
-    # resolve_and_save_track_info(pd.read_csv(KWORB_PATH), 100)
-    # process_spotify_stuff()
-    # process_genres()
-    # process_buckets()
+    #pull_kworb(250000000)
+    #resolve_and_save_track_info(pd.read_csv(KWORB_PATH), 100)
+    #process_spotify_stuff()
+    #process_genres()
+    process_buckets()
     crontab_commit()
