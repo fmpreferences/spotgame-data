@@ -5,3 +5,4 @@ searches_cache.sqlite3
 kworb_cache/*
 discogs.py
 __pycache__/
+*.sql

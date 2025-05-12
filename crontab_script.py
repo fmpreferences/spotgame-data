@@ -67,7 +67,7 @@ BUCKET_MAP = {
 }
 
 DB_PATH = "somewhereonmyvps.sqlite3"
-PROD_PATH = 'prod.sqlite3'
+PROD_PATH = "prod.sqlite3"
 CACHE_PATH = "searches_cache.sqlite3"
 KWORB_PATH = "KWORB.csv"
 KWORB_CACHE_PATH = "kworb_cache"
@@ -137,23 +137,7 @@ def pull_kworb(threshold: int) -> None:
 
     :param threshold: threshold to pull over
     """
-    years = [
-        2024,
-        2023,
-        2022,
-        2021,
-        2020,
-        2019,
-        2018,
-        2017,
-        2016,
-        2015,
-        2014,
-        2013,
-        2012,
-        2011,
-        2010,
-        2005,
+    years = list(range(2010, datetime.now().year +1)) +[    2005,
         2000,
         1990,
         1980,
@@ -742,8 +726,8 @@ def process_spotify_stuff():
         )
         artist_df = process_artists(track_artist_df["artist_id"])
         # id column first for auto script
-        artist_df = artist_df.loc[:, ['artist_id', 'artist_name']]
-        artist_df.drop("genre", axis=1).drop_duplicates().to_sql(
+        artist_df = artist_df.loc[:, ["artist_id", "artist_name", 'genre']]
+        artist_df.drop('genre', axis=1).drop_duplicates().to_sql(
             "artists", conn, if_exists="replace", index=False
         )
         artist_df.drop("artist_name", axis=1).dropna().to_sql(
@@ -818,11 +802,11 @@ def process_buckets():
         df = df_genres.merge(df_artists, "left", ["artist_id"])
         df["Prop"] = df["0_x"] / df["0_y"]
 
-        df_small = df[df["0_y"] <= 16]
-        df_big = df[df["0_y"] > 16]
+        df_small = df[df["0_y"] <= 8]
+        df_big = df[df["0_y"] > 8]
 
         df = pd.concat(
-            [df_small[df_small["Prop"] > 0.5], df_big[df_big["Prop"] > 0.3333]]
+            [df_small[df_small["Prop"] >= 0.5], df_big[df_big["Prop"] > 0.3333]]
         )
         track_artists_df = pd.read_sql(
             "select * from track_artists;",
@@ -830,47 +814,51 @@ def process_buckets():
         )
         df = df.merge(track_artists_df, "right", "artist_id")
         bucket_df = df[["id", "bucket"]].fillna("other").drop_duplicates()
-        bucket_df.to_sql(
-            "buckets", conn, if_exists="replace", index=False
-        )
-        track_artists_df.to_sql("track_artists", prod, if_exists='replace', index=False)
+        bucket_df.to_sql("buckets", conn, if_exists="replace", index=False)
+        track_artists_df.to_sql("track_artists", prod, if_exists="replace", index=False)
         pd.read_sql(
             "select * from tracks;",
             conn,
-        ).to_sql("tracks", prod, if_exists='replace', index=False)
+        ).to_sql("tracks", prod, if_exists="replace", index=False)
         pd.read_sql(
             "select * from artists;",
             conn,
-        ).to_sql("artists", prod, if_exists='replace', index=False)
-        bucket_df.to_sql(
-            "buckets", prod, if_exists="replace", index=False
-        )
+        ).to_sql("artists", prod, if_exists="replace", index=False)
+        bucket_df.to_sql("buckets", prod, if_exists="replace", index=False)
 
 
 def crontab_commit():
     if Path("spotgame.sql").exists():
         Path("spotgame.sql").rename("spotgamebak.sql")
-    subprocess.run("sqlite3 somewhereonmyvps.sqlite3 .dump > spotgame.sql", shell=True)
+    subprocess.run("sqlite3 prod.sqlite3 .dump > spotgame.sql", shell=True)
     with open("spotgame.sql") as s1, open("spotgamebak.sql") as s2, open(
         "spotdiff.sql", "w"
     ) as sd:
-        l1, l2 = s1.readlines(),  s2.readlines()
+        l1, l2 = s1.readlines(), s2.readlines()
         removal = set(l2) - set(l1)
         addition = set(l1) - set(l2)
-        print([remove for remove in removal if "INSERT" not in remove])
-        removal = [f"delete from {removing.split(' ', 3)[2]} where id={removing.split('(', 1)[1].split(',')[0]};\n" for removing in removal]
+        removal = [remove for remove in removal if "INSERT" in remove]
+        # print(removal)
+        deletes = []
+        for removing in removal:
+            table = removing.split(" ", 3)[2]
+            # print(table)
+            if table in ("tracks", "buckets"):
+                deletes.append(
+                    f"delete from {table} where id={removing.split('(', 1)[1].split(',')[0]};\n"
+                )
         ex = f"""
 PRAGMA foreign_keys=OFF;
-{''.join(removal)}
+{''.join(deletes)}
 {''.join(addition)}
         """
         sd.write(ex)
 
 
 if __name__ == "__main__":
-    #pull_kworb(250000000)
-    #resolve_and_save_track_info(pd.read_csv(KWORB_PATH), 100)
-    #process_spotify_stuff()
-    #process_genres()
+    pull_kworb(250000000)
+    resolve_and_save_track_info(pd.read_csv(KWORB_PATH), 100)
+    process_spotify_stuff()
+    process_genres()
     process_buckets()
     crontab_commit()
