@@ -137,7 +137,8 @@ def pull_kworb(threshold: int) -> None:
 
     :param threshold: threshold to pull over
     """
-    years = list(range(2010, datetime.now().year +1)) +[    2005,
+    years = list(range(2010, datetime.now().year + 1)) + [
+        2005,
         2000,
         1990,
         1980,
@@ -168,11 +169,23 @@ def alnum_only(s):
 
 
 def clean_junk_words(s):
-    return re.sub(
-        r" [\(\[][Ff]eat\. .*?[\)\]]| [\(\[]with .*?[\)\]]| - (\d+ )?Remaster(ed)?( \d+)?| \(.*? Vs\. .*?\)| [\(\[](\d+ )?Remaster(ed)?( \d+)?[\)\]]| - .*? vs [a-z-A-Z 0-9]+| - [Ff]eaturing [a-z-A-Z 0-9]+",
+    """
+    Removes flavor words that aren't relevant and clog up the button size
+    """
+    s = s.replace('"', "")
+    s = re.sub(
+        r" [\(\[][Ff]eat\. .*?[\)\]]| - [Ff]eaturing [a-z-A-Z 0-9]+| [\(\[]with .*?[\)\]]",
         "",
         s,
-    ).replace('"', "")
+    )
+    s = re.sub(
+        r" - (\d+ )?Remaster(ed)?( \d+)?| [\(\[](\d+ )?Remaster(ed)?( \d+)?[\)\]]",
+        "",
+        s,
+    )
+    s = re.sub(r" \(.*? Vs\. .*?\)| - .*? vs [a-z-A-Z 0-9]+,", "", s)
+    s = re.sub(r" [\[\(][Ff]rom .*?[\]\)]| - [Ff]rom .*?", "", s)
+    return s
 
 
 def search_caches(title: str, artist: str, days: int) -> dict:
@@ -726,8 +739,8 @@ def process_spotify_stuff():
         )
         artist_df = process_artists(track_artist_df["artist_id"])
         # id column first for auto script
-        artist_df = artist_df.loc[:, ["artist_id", "artist_name", 'genre']]
-        artist_df.drop('genre', axis=1).drop_duplicates().to_sql(
+        artist_df = artist_df.loc[:, ["artist_id", "artist_name", "genre"]]
+        artist_df.drop("genre", axis=1).drop_duplicates().to_sql(
             "artists", conn, if_exists="replace", index=False
         )
         artist_df.drop("artist_name", axis=1).dropna().to_sql(
