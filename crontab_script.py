@@ -184,7 +184,7 @@ def clean_junk_words(s):
         s,
     )
     s = re.sub(r" \(.*? Vs\. .*?\)| - .*? vs [a-z-A-Z 0-9]+,", "", s)
-    s = re.sub(r" [\[\(][Ff]rom .*?[\]\)]| - [Ff]rom .*?", "", s)
+    s = re.sub(r" [\[\(][Ff]rom .*?[\]\)]| - [Ff]rom .*", "", s)
     return s
 
 
